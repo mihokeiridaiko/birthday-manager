@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>誕生日ノート</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <style>* { box-sizing: border-box; margin: 0; padding: 0; }</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+const SUPABASE_URL = 'https://ckiszpfcaeoxschkgojd.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_ZWFtAIrfI3hfqwLRC7Af_Q_MyN93Lcr';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ── カラー & スタイル ──
+const C = {
+  bg: '#fdf6f0', card: '#ffffff', ink: '#1a1a2e', ink2: '#2d2d4a',
+  border: '#e8e0d8', muted: '#9a8a7a', accent: '#e07b5a',
+  pink: '#e85d8a', sage: '#3d7a56', gold: '#c9951a',
+};
+const S = {
+  app: { fontFamily:"'Noto Sans JP',sans-serif", background:C.bg, minHeight:'100vh', color:C.ink, fontSize:15, maxWidth:480, margin:'0 auto' },
+  header: { background:C.ink, color:'white', padding:'14px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', position:'sticky', top:0, zIndex:100 },
+  page: { padding:'16px 14px 80px' },
+  bottomNav: { position:'fixed', bottom:0, left:'50%', transform:'translateX(-50%)', width:'100%', maxWidth:480, background:C.ink, display:'flex', zIndex:100 },
+  navBtn: a => ({ flex:1, border:'none', background:'none', color:a?C.gold:'rgba(255,255,255,0.4)', padding:'10px 0 8px', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:3, fontFamily:'inherit', fontSize:10 }),
+  card: { background:C.card, borderRadius:16, padding:16, border:`1px solid ${C.border}`, marginBottom:10, cursor:'pointer' },
+  overlay: { position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:200, display:'flex', alignItems:'flex-end', justifyContent:'center' },
+  sheet: { background:C.card, borderRadius:'20px 20px 0 0', width:'100%', maxWidth:480, maxHeight:'92vh', overflowY:'auto', paddingBottom:24 },
+  sheetHead: { padding:'16px 20px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:`1px solid ${C.border}`, position:'sticky', top:0, background:C.card, zIndex:1 },
+  label: { display:'block', fontSize:11, fontWeight:700, letterSpacing:0.5, color:C.muted, textTransform:'uppercase', marginBottom:6 },
+  input: { width:'100%', padding:'12px 14px', border:`1.5px solid ${C.border}`, borderRadius:12, background:C.bg, fontFamily:'inherit', fontSize:14, color:C.ink, outline:'none' },
+  btnPrimary: { flex:1, background:C.ink, color:'white', border:'none', padding:15, borderRadius:14, fontFamily:'inherit', fontSize:15, fontWeight:700, cursor:'pointer' },
+  btnSub: { background:C.bg, color:C.ink, border:`1.5px solid ${C.border}`, padding:'14px 18px', borderRadius:14, fontFamily:'inherit', fontSize:14, cursor:'pointer' },
+  btnDel: { background:'rgba(220,50,50,0.08)', color:'#c03030', border:'1.5px solid rgba(220,50,50,0.2)', padding:'14px 16px', borderRadius:14, fontFamily:'inherit', fontSize:13, cursor:'pointer' },
+  sectionTitle: { fontSize:12, fontWeight:700, color:C.muted, letterSpacing:0.8, textTransform:'uppercase', margin:'20px 0 10px' },
+  fab: { background:C.accent, color:'white', border:'none', width:40, height:40, borderRadius:12, fontSize:22, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' },
+};
+
+// ── ユーティリティ ──
+const today = () => { const d = new Date(); d.setHours(0,0,0,0); return d; };
+function daysUntilBD(dateStr) {
+  if (!dateStr) return null;
+  const t = today(), x = new Date(dateStr);
+  let n = new Date(t.getFullYear(), x.getMonth(), x.getDate());
+  if (n < t) n.setFullYear(t.getFullYear()+1);
+  return Math.round((n-t)/86400000);
+}
+function calcAge(dateStr) {
+  if (!dateStr) return null;
+  const t = new Date(), x = new Date(dateStr);
+  let a = t.getFullYear()-x.getFullYear();
+  if (t.getMonth()<x.getMonth()||(t.getMonth()===x.getMonth()&&t.getDate()<x.getDate())) a--;
+  return a;
+}
+function fmt(d) { if (!d) return '—'; const x = new Date(d); return `${x.getFullYear()}/${x.getMonth()+1}/${x.getDate()}`; }
+function fmtMD(d) { if (!d) return ''; const x = new Date(d); return `${x.getMonth()+1}/${x.getDate()}`; }
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+
+// ── Supabase データ操作 ──
+async function loadAll(userId) {
+  const [c, f, m, s] = await Promise.all([
+    sb.from('bd_contacts').select('*').eq('user_id', userId).order('name'),
+    sb.from('bd_family').select('*').eq('user_id', userId),
+    sb.from('bd_mourning').select('*').eq('user_id', userId),
+    sb.from('bd_settings').select('*').eq('user_id', userId).single(),
+  ]);
+  const contacts = (c.data||[]).map(ct => ({
+    ...ct,
+    family: (f.data||[]).filter(x => x.contact_id === ct.id),
+    mourning: (m.data||[]).filter(x => x.contact_id === ct.id),
+  }));
+  return { contacts, settings: s.data || null };
+}
+
+async function saveContact(userId, form, editId) {
+  const payload = { user_id: userId, name: form.name, birthday: form.birthday || null, memo: form.memo || null };
+  let contactId = editId;
+  if (editId) {
+    await sb.from('bd_contacts').update(payload).eq('id', editId);
+  } else {
+    const { data } = await sb.from('bd_contacts').insert(payload).select().single();
+    contactId = data.id;
+  }
+  // family: 全削除→再挿入
+  await sb.from('bd_family').delete().eq('contact_id', contactId);
+  if (form.family.length) {
+    await sb.from('bd_family').insert(
+      form.family.filter(f => f.name||f.birthday).map(f => ({
+        contact_id: contactId, user_id: userId,
+        relationship: f.relationship||'', name: f.name||'', birthday: f.birthday||null
+      }))
+    );
+  }
+  // mourning: 全削除→再挿入
+  await sb.from('bd_mourning').delete().eq('contact_id', contactId);
+  if (form.mourning.length) {
+    await sb.from('bd_mourning').insert(
+      form.mourning.filter(m => m.relationship||m.year_month).map(m => ({
+        contact_id: contactId, user_id: userId,
+        relationship: m.relationship||'', year_month: m.year_month||''
+      }))
+    );
+  }
+  return contactId;
+}
+
+async function deleteContact(contactId) {
+  await sb.from('bd_contacts').delete().eq('id', contactId);
+}
+
+// ── ログイン画面 ──
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState('');
+  const [pass, setPass] = useState('');
+  const [mode, setMode] = useState('login'); // login | signup
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    if (!email || !pass) { setErr('メールアドレスとパスワードを入力してください'); return; }
+    setLoading(true); setErr('');
+    try {
+      let res;
+      if (mode === 'signup') {
+        res = await sb.auth.signUp({ email, password: pass, options: { emailRedirectTo: undefined } });
+        if (res.error) throw res.error;
+        if (res.data.user && !res.data.session) {
+          setErr('確認メールを送りました。メールのリンクをクリックしてからログインしてください。');
+          setMode('login'); setLoading(false); return;
+        }
+      } else {
+        res = await sb.auth.signInWithPassword({ email, password: pass });
+        if (res.error) throw res.error;
+      }
+      onLogin(res.data.user);
+    } catch(e) {
+      setErr(e.message === 'Invalid login credentials' ? 'メールアドレスまたはパスワードが違います' : e.message);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ ...S.app, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100vh', padding:24 }}>
+      <div style={{ fontSize:40, marginBottom:8 }}>🎂</div>
+      <div style={{ fontSize:22, fontWeight:700, marginBottom:4 }}>誕生日ノート</div>
+      <div style={{ fontSize:12, color:C.muted, marginBottom:32 }}>大切な人の誕生日を管理</div>
+      <div style={{ width:'100%', maxWidth:360 }}>
+        <div style={{ marginBottom:14 }}>
+          <label style={S.label}>メールアドレス</label>
+          <input style={S.input} type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="example@email.com" />
+        </div>
+        <div style={{ marginBottom:14 }}>
+          <label style={S.label}>パスワード</label>
+          <input style={S.input} type="password" value={pass} onChange={e=>setPass(e.target.value)} placeholder="8文字以上" onKeyDown={e=>e.key==='Enter'&&submit()} />
+        </div>
+        {err && <div style={{ fontSize:12, color:'#c03030', marginBottom:12, padding:'10px 14px', background:'rgba(200,0,0,0.06)', borderRadius:10 }}>{err}</div>}
+        <button style={{ ...S.btnPrimary, width:'100%', opacity:loading?0.6:1 }} onClick={submit} disabled={loading}>
+          {loading ? '処理中...' : mode==='signup' ? 'アカウント作成' : 'ログイン'}
+        </button>
+        <div style={{ textAlign:'center', marginTop:16, fontSize:13, color:C.muted, cursor:'pointer' }}
+          onClick={() => { setMode(m => m==='login'?'signup':'login'); setErr(''); }}>
+          {mode==='login' ? 'はじめての方はこちら（アカウント作成）' : 'すでにアカウントをお持ちの方'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── フォームシート ──
+function ContactForm({ open, onClose, editContact, onSaved, userId }) {
+  const blank = { name:'', birthday:'', memo:'', family:[], mourning:[] };
+  const [form, setForm] = useState(blank);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      if (editContact) setForm({ name:editContact.name||'', birthday:editContact.birthday||'', memo:editContact.memo||'', family:(editContact.family||[]).map(f=>({...f})), mourning:(editContact.mourning||[]).map(m=>({...m})) });
+      else setForm(blank);
+    }
+  }, [open, editContact]);
+
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+  const addFamily = () => set('family', [...form.family, { _id:newId(), relationship:'', name:'', birthday:'' }]);
+  const updFamily = (i,v) => set('family', form.family.map((x,idx)=>idx===i?{...x,...v}:x));
+  const delFamily = i => set('family', form.family.filter((_,idx)=>idx!==i));
+  const addMourning = () => set('mourning', [...form.mourning, { _id:newId(), relationship:'', year_month:'' }]);
+  const updMourning = (i,v) => set('mourning', form.mourning.map((x,idx)=>idx===i?{...x,...v}:x));
+  const delMourning = i => set('mourning', form.mourning.filter((_,idx)=>idx!==i));
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { alert('名前を入力してください'); return; }
+    setSaving(true);
+    await saveContact(userId, form, editContact?.id);
+    setSaving(false);
+    onSaved();
+    onClose();
+  };
+
+  const handleDelete = async () => {
+    if (!window.confirm('削除しますか？')) return;
+    await deleteContact(editContact.id);
+    onSaved();
+    onClose();
+  };
+
+  if (!open) return null;
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={S.sheet}>
+        <div style={{ width:36, height:4, background:C.border, borderRadius:2, margin:'12px auto 0' }} />
+        <div style={S.sheetHead}>
+          <div style={{ fontSize:16, fontWeight:700 }}>{editContact?'編集':'新規登録'}</div>
+          <button style={{ background:C.bg, border:'none', width:30, height:30, borderRadius:'50%', cursor:'pointer', color:C.muted, fontSize:16 }} onClick={onClose}>✕</button>
+        </div>
+        <div style={{ padding:'20px 20px 0' }}>
+
+          {/* 基本情報 */}
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>名前 *</label>
+            <input style={S.input} value={form.name} onChange={e=>set('name',e.target.value)} placeholder="例: 田中さん、お母さん" />
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>誕生日</label>
+            <input type="date" style={S.input} value={form.birthday} onChange={e=>set('birthday',e.target.value)} />
+          </div>
+          <div style={{ marginBottom:20 }}>
+            <label style={S.label}>メモ</label>
+            <textarea style={{ ...S.input, resize:'vertical', minHeight:70 }} value={form.memo} onChange={e=>set('memo',e.target.value)} placeholder="好きなもの、プレゼントのアイデアなど..." />
+          </div>
+
+          {/* 家族 */}
+          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:16, marginBottom:16 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+              <div style={{ fontSize:13, fontWeight:700 }}>家族の誕生日</div>
+              <button onClick={addFamily} style={{ background:C.sage, color:'white', border:'none', borderRadius:8, padding:'5px 12px', fontSize:12, cursor:'pointer' }}>＋ 追加</button>
+            </div>
+            {form.family.map((f,i) => (
+              <div key={f._id||f.id||i} style={{ background:C.bg, borderRadius:12, padding:'12px 14px', marginBottom:8, border:`1px solid ${C.border}` }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                  <div style={{ fontSize:12, color:C.muted, fontWeight:600 }}>家族 {i+1}</div>
+                  <button onClick={()=>delFamily(i)} style={{ background:'none', border:'none', color:C.muted, cursor:'pointer', fontSize:16 }}>✕</button>
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
+                  <div>
+                    <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>続柄</div>
+                    <select style={{ ...S.input, fontSize:13, padding:'8px 10px' }} value={f.relationship||''} onChange={e=>updFamily(i,{relationship:e.target.value})}>
+                      <option value="">選択</option>
+                      {['配偶者','夫','妻','長男','長女','次男','次女','三男','三女','息子','娘','父','母','義父','義母','祖父','祖母','兄','姉','弟','妹','孫'].map(r=><option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>名前</div>
+                    <input style={{ ...S.input, fontSize:13, padding:'8px 10px' }} value={f.name||''} onChange={e=>updFamily(i,{name:e.target.value})} placeholder="例: 花子" />
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>生年月日</div>
+                  <input type="date" style={{ ...S.input, fontSize:13, padding:'8px 10px' }} value={f.birthday||''} onChange={e=>updFamily(i,{birthday:e.target.value})} />
+                </div>
+              </div>
+            ))}
+            {form.family.length===0 && <div style={{ fontSize:12, color:C.muted, textAlign:'center', padding:'10px 0' }}>まだ登録されていません</div>}
+          </div>
+
+          {/* 喪中 */}
+          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:16, marginBottom:16 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+              <div style={{ fontSize:13, fontWeight:700 }}>喪中メモ</div>
+              <button onClick={addMourning} style={{ background:C.ink2, color:'white', border:'none', borderRadius:8, padding:'5px 12px', fontSize:12, cursor:'pointer' }}>＋ 追加</button>
+            </div>
+            {form.mourning.map((m,i) => (
+              <div key={m._id||m.id||i} style={{ background:C.bg, borderRadius:12, padding:'12px 14px', marginBottom:8, border:`1px solid ${C.border}` }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                  <div style={{ fontSize:12, color:C.muted, fontWeight:600 }}>喪中 {i+1}</div>
+                  <button onClick={()=>delMourning(i)} style={{ background:'none', border:'none', color:C.muted, cursor:'pointer', fontSize:16 }}>✕</button>
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                  <div>
+                    <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>亡くなった方の続柄</div>
+                    <select style={{ ...S.input, fontSize:13, padding:'8px 10px' }} value={m.relationship||''} onChange={e=>updMourning(i,{relationship:e.target.value})}>
+                      <option value="">選択</option>
+                      {['配偶者','夫','妻','父','母','義父','義母','祖父','祖母','長男','長女','次男','次女','息子','娘','兄','姉','弟','妹'].map(r=><option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>年月</div>
+                    <input style={{ ...S.input, fontSize:13, padding:'8px 10px' }} value={m.year_month||''} onChange={e=>updMourning(i,{year_month:e.target.value})} placeholder="例: 2024年11月" />
+                  </div>
+                </div>
+              </div>
+            ))}
+            {form.mourning.length===0 && <div style={{ fontSize:12, color:C.muted, textAlign:'center', padding:'10px 0' }}>まだ登録されていません</div>}
+          </div>
+
+        </div>
+        <div style={{ padding:'16px 20px', borderTop:`1px solid ${C.border}`, display:'flex', gap:10, position:'sticky', bottom:0, background:C.card }}>
+          {editContact && <button style={S.btnDel} onClick={handleDelete}>削除</button>}
+          <button style={S.btnSub} onClick={onClose}>戻る</button>
+          <button style={{ ...S.btnPrimary, opacity:saving?0.6:1 }} onClick={handleSave} disabled={saving}>{saving?'保存中...':'保存する'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 詳細シート ──
+function ContactDetail({ open, onClose, contact, onEdit }) {
+  if (!open || !contact) return null;
+  const age = calcAge(contact.birthday);
+  const bd = daysUntilBD(contact.birthday);
+  const hasMourning = (contact.mourning||[]).length > 0;
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={S.sheet}>
+        <div style={{ width:36, height:4, background:C.border, borderRadius:2, margin:'12px auto 0' }} />
+        <div style={S.sheetHead}>
+          <div style={{ fontSize:16, fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
+            {contact.name}
+            {hasMourning && <span style={{ fontSize:11, background:'#333', color:'white', padding:'2px 8px', borderRadius:20 }}>喪中</span>}
+          </div>
+          <button style={{ background:C.bg, border:'none', width:30, height:30, borderRadius:'50%', cursor:'pointer', color:C.muted, fontSize:16 }} onClick={onClose}>✕</button>
+        </div>
+        <div style={{ padding:20 }}>
+          {/* 誕生日アラート */}
+          {bd !== null && bd <= 30 && (
+            <div style={{ borderRadius:12, padding:'12px 14px', marginBottom:14, fontSize:14, fontWeight:500, background:bd<=3?'rgba(232,93,138,0.1)':'rgba(224,123,90,0.1)', color:bd<=3?C.pink:C.accent }}>
+              🎂 誕生日まであと{bd===0?'今日！':`${bd}日`}（{fmt(contact.birthday)}）
+            </div>
+          )}
+          {/* 基本情報 */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, paddingBottom:16, borderBottom:`1px solid ${C.border}`, marginBottom:16 }}>
+            <div><div style={{ fontSize:11, color:C.muted, fontWeight:600, marginBottom:4 }}>誕生日</div><div style={{ fontSize:15, fontWeight:500 }}>{fmt(contact.birthday)}</div></div>
+            <div><div style={{ fontSize:11, color:C.muted, fontWeight:600, marginBottom:4 }}>年齢</div><div style={{ fontSize:15, fontWeight:500 }}>{age!==null?`${age}歳`:'—'}</div></div>
+          </div>
+          {/* メモ */}
+          {contact.memo && (
+            <div style={{ paddingBottom:16, borderBottom:`1px solid ${C.border}`, marginBottom:16 }}>
+              <div style={{ fontSize:11, color:C.muted, fontWeight:600, marginBottom:6 }}>メモ</div>
+              <div style={{ fontSize:14, lineHeight:1.7, whiteSpace:'pre-wrap' }}>{contact.memo}</div>
+            </div>
+          )}
+          {/* 家族 */}
+          {(contact.family||[]).length > 0 && (
+            <div style={{ paddingBottom:16, borderBottom:`1px solid ${C.border}`, marginBottom:16 }}>
+              <div style={{ fontSize:11, color:C.muted, fontWeight:600, marginBottom:8 }}>家族の誕生日</div>
+              {contact.family.map((f,i) => {
+                const fbd = daysUntilBD(f.birthday);
+                const fage = calcAge(f.birthday);
+                return (
+                  <div key={i} style={{ background:C.bg, borderRadius:10, padding:'10px 12px', marginBottom:6, display:'flex', alignItems:'center', gap:10 }}>
+                    <div style={{ fontSize:12, color:C.muted, minWidth:40 }}>{f.relationship}</div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontWeight:500, fontSize:14 }}>{f.name}</div>
+                      <div style={{ fontSize:12, color:C.muted }}>{fmt(f.birthday)}{fage!==null?` · ${fage}歳`:''}</div>
+                    </div>
+                    {fbd !== null && fbd <= 30 && <div style={{ fontSize:11, color:fbd<=3?C.pink:C.accent, fontWeight:600 }}>あと{fbd===0?'今日':fbd+'日'}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* 喪中 */}
+          {(contact.mourning||[]).length > 0 && (
+            <div style={{ paddingBottom:16, borderBottom:`1px solid ${C.border}`, marginBottom:16 }}>
+              <div style={{ fontSize:11, color:C.muted, fontWeight:600, marginBottom:8 }}>喪中メモ</div>
+              {contact.mourning.map((m,i) => (
+                <div key={i} style={{ background:'#f5f5f5', borderRadius:10, padding:'10px 12px', marginBottom:6, borderLeft:'3px solid #888' }}>
+                  <div style={{ fontSize:13 }}><span style={{ color:C.muted }}>{m.relationship}</span>　{m.year_month}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <button style={{ ...S.btnPrimary, width:'100%' }} onClick={() => { onClose(); setTimeout(()=>onEdit(contact),200); }}>✏️ 編集する</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ホームタブ ──
+function HomeTab({ contacts, onSelect }) {
+  const items = [];
+  contacts.forEach(c => {
+    const bd = daysUntilBD(c.birthday);
+    if (bd !== null && bd <= 30) items.push({ contact:c, name:c.name, label:'', birthday:c.birthday, days:bd });
+    (c.family||[]).forEach(f => {
+      const fbd = daysUntilBD(f.birthday);
+      if (fbd !== null && fbd <= 30) items.push({ contact:c, name:c.name, label:`${f.relationship} ${f.name}`, birthday:f.birthday, days:fbd });
+    });
+  });
+  items.sort((a,b)=>a.days-b.days);
+
+  const soon = items.filter(x=>x.days>0&&x.days<=7);
+  const today_ = items.filter(x=>x.days===0);
+  const rest = items.filter(x=>x.days>7);
+
+  const BdCard = ({item}) => (
+    <div style={{ ...S.card, display:'flex', alignItems:'center', gap:12, borderLeft:`4px solid ${item.days===0?C.pink:item.days<=7?C.accent:C.gold}` }}
+      onClick={()=>onSelect(item.contact)}>
+      <div style={{ fontSize:28 }}>{item.days===0?'🎉':'🎂'}</div>
+      <div style={{ flex:1 }}>
+        <div style={{ fontWeight:600, fontSize:15 }}>{item.label || item.name}</div>
+        {item.label && <div style={{ fontSize:12, color:C.muted }}>{item.name}</div>}
+        <div style={{ fontSize:12, color:C.muted }}>{fmt(item.birthday)}（{item.days===0?'今日！':item.days+'日後'}）</div>
+      </div>
+      <div style={{ fontSize:16, color:C.border }}>›</div>
+    </div>
+  );
+
+  if (items.length === 0) return (
+    <div style={S.page}>
+      <div style={{ textAlign:'center', padding:'60px 20px', color:C.muted }}>
+        <div style={{ fontSize:50, marginBottom:12, opacity:0.3 }}>🎂</div>
+        <div style={{ fontSize:16, fontWeight:600 }}>30日以内の誕生日はありません</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={S.page}>
+      {today_.length > 0 && <>
+        <div style={S.sectionTitle}>🎉 今日が誕生日</div>
+        {today_.map((it,i)=><BdCard key={i} item={it}/>)}
+      </>}
+      {soon.length > 0 && <>
+        <div style={S.sectionTitle}>🎂 7日以内</div>
+        {soon.map((it,i)=><BdCard key={i} item={it}/>)}
+      </>}
+      {rest.length > 0 && <>
+        <div style={S.sectionTitle}>📅 30日以内</div>
+        {rest.map((it,i)=><BdCard key={i} item={it}/>)}
+      </>}
+    </div>
+  );
+}
+
+// ── 一覧タブ ──
+function ListTab({ contacts, onSelect }) {
+  const [search, setSearch] = useState('');
+  const filtered = contacts
+    .filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => {
+      const da = daysUntilBD(a.birthday) ?? 9999;
+      const db = daysUntilBD(b.birthday) ?? 9999;
+      return da - db;
+    });
+  return (
+    <div style={S.page}>
+      <div style={{ position:'relative', marginBottom:14 }}>
+        <span style={{ position:'absolute', left:13, top:'50%', transform:'translateY(-50%)', fontSize:16, color:C.muted }}>🔍</span>
+        <input style={{ ...S.input, paddingLeft:40 }} value={search} onChange={e=>setSearch(e.target.value)} placeholder="名前で検索" />
+      </div>
+      {filtered.length ? filtered.map(c => {
+        const bd = daysUntilBD(c.birthday);
+        const age = calcAge(c.birthday);
+        const hasMourning = (c.mourning||[]).length > 0;
+        return (
+          <div key={c.id} style={S.card} onClick={()=>onSelect(c)}>
+            <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+              <div style={{ width:44, height:44, borderRadius:12, background:C.ink2, color:'white', fontSize:18, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>{c.name.charAt(0)}</div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontWeight:600, fontSize:15, display:'flex', alignItems:'center', gap:6 }}>
+                  {c.name}
+                  {hasMourning && <span style={{ fontSize:10, background:'#444', color:'white', padding:'1px 7px', borderRadius:20 }}>喪中</span>}
+                </div>
+                <div style={{ fontSize:12, color:C.muted, marginTop:2 }}>
+                  🎂 {c.birthday ? fmtMD(c.birthday) : '未登録'}
+                  {age !== null ? `（${age}歳）` : ''}
+                  {(c.family||[]).length ? `　👨‍👩‍👧 ${c.family.length}人` : ''}
+                </div>
+              </div>
+              {bd !== null && bd <= 30 && <div style={{ fontSize:12, fontWeight:700, color:bd<=3?C.pink:C.accent }}>あと{bd===0?'今日':bd+'日'}</div>}
+            </div>
+          </div>
+        );
+      }) : <div style={{ textAlign:'center', padding:'60px 20px', color:C.muted }}><div style={{ fontSize:40, marginBottom:10, opacity:0.3 }}>👤</div>{search?'見つかりません':'まだ登録されていません'}</div>}
+    </div>
+  );
+}
+
+// ── 設定タブ ──
+function SettingsTab({ user, settings, onSettingsChanged, onLogout }) {
+  const [lineCode, setLineCode] = useState('');
+  const [notifyLine, setNotifyLine] = useState(settings?.notify_line || false);
+  const [hourBefore, setHourBefore] = useState(settings?.notify_hour_before ?? 8);
+  const [hourDayOf, setHourDayOf] = useState(settings?.notify_hour_day_of ?? 8);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    if (settings) { setNotifyLine(settings.notify_line||false); setHourBefore(settings.notify_hour_before??8); setHourDayOf(settings.notify_hour_day_of??8); }
+  }, [settings]);
+
+  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(''),2500); };
+
+  const generateCode = async () => {
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = new Date(Date.now() + 10*60*1000).toISOString();
+    await sb.from('bd_settings').upsert({ user_id:user.id, line_link_code:code, line_link_code_expires_at:expires }, { onConflict:'user_id' });
+    setLineCode(code);
+    onSettingsChanged();
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    await sb.from('bd_settings').upsert({ user_id:user.id, notify_line:notifyLine, notify_hour_before:hourBefore, notify_hour_day_of:hourDayOf }, { onConflict:'user_id' });
+    setSaving(false);
+    showToast('保存しました');
+    onSettingsChanged();
+  };
+
+  return (
+    <div style={S.page}>
+      {/* LINE連携 */}
+      <div style={{ background:C.card, borderRadius:16, padding:20, border:`1px solid ${C.border}`, marginBottom:14 }}>
+        <div style={{ fontSize:15, fontWeight:700, marginBottom:4 }}>LINE通知設定</div>
+        <div style={{ fontSize:12, color:C.muted, marginBottom:16 }}>
+          {settings?.line_user_id ? '✅ LINE連携済み' : '未連携'}
+        </div>
+        {!settings?.line_user_id && (
+          <>
+            <div style={{ fontSize:12, color:C.muted, marginBottom:12, lineHeight:1.7 }}>
+              ① 下のボタンでコードを発行<br/>
+              ② LINEボット（おうち書類管理）に6桁のコードを送信<br/>
+              ③ 自動で連携されます
+            </div>
+            <button style={{ ...S.btnPrimary, background:'#06C755', width:'100%', marginBottom:lineCode?12:0 }} onClick={generateCode}>
+              🔗 LINEコードを発行する
+            </button>
+            {lineCode && (
+              <div style={{ textAlign:'center', marginTop:12, padding:'14px', background:'#f0fff4', borderRadius:12, border:'1px solid #06C755' }}>
+                <div style={{ fontSize:11, color:C.muted, marginBottom:4 }}>LINEに送信するコード（10分有効）</div>
+                <div style={{ fontSize:32, fontWeight:700, letterSpacing:6, color:'#06C755' }}>{lineCode}</div>
+              </div>
+            )}
+          </>
+        )}
+        {settings?.line_user_id && (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <div style={{ fontSize:14 }}>LINE通知を受け取る</div>
+            <div onClick={()=>setNotifyLine(v=>!v)} style={{ width:48, height:28, borderRadius:14, background:notifyLine?'#06C755':'#ccc', cursor:'pointer', position:'relative', transition:'background 0.2s' }}>
+              <div style={{ position:'absolute', top:3, left:notifyLine?22:3, width:22, height:22, borderRadius:'50%', background:'white', transition:'left 0.2s' }} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 通知時間 */}
+      <div style={{ background:C.card, borderRadius:16, padding:20, border:`1px solid ${C.border}`, marginBottom:14 }}>
+        <div style={{ fontSize:15, fontWeight:700, marginBottom:16 }}>通知時間</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <div>
+            <label style={S.label}>前日通知</label>
+            <select style={{ ...S.input, fontSize:14 }} value={hourBefore} onChange={e=>setHourBefore(Number(e.target.value))}>
+              {[6,7,8,9,10,11,12,18,19,20,21].map(h=><option key={h} value={h}>{h}時</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>当日通知</label>
+            <select style={{ ...S.input, fontSize:14 }} value={hourDayOf} onChange={e=>setHourDayOf(Number(e.target.value))}>
+              {[6,7,8,9,10,11,12,18,19,20,21].map(h=><option key={h} value={h}>{h}時</option>)}
+            </select>
+          </div>
+        </div>
+        <button style={{ ...S.btnPrimary, width:'100%', marginTop:14, opacity:saving?0.6:1 }} onClick={saveSettings} disabled={saving}>
+          {saving?'保存中...':'設定を保存'}
+        </button>
+      </div>
+
+      {/* アカウント */}
+      <div style={{ background:C.card, borderRadius:16, padding:20, border:`1px solid ${C.border}` }}>
+        <div style={{ fontSize:15, fontWeight:700, marginBottom:8 }}>アカウント</div>
+        <div style={{ fontSize:13, color:C.muted, marginBottom:14 }}>{user.email}</div>
+        <button style={{ ...S.btnDel, width:'100%', marginBottom:10 }} onClick={async () => {
+          if (!window.confirm('登録されているデータをすべて削除しますか？\nこの操作は取り消せません。')) return;
+          await sb.from('bd_family').delete().eq('user_id', user.id);
+          await sb.from('bd_mourning').delete().eq('user_id', user.id);
+          await sb.from('bd_contacts').delete().eq('user_id', user.id);
+          alert('全件削除しました。Excelから再インポートしてください。');
+          onSettingsChanged();
+        }}>🗑️ データをすべて削除する</button>
+        <button style={{ ...S.btnSub, width:'100%', color:'#c03030', borderColor:'rgba(200,0,0,0.2)' }} onClick={onLogout}>ログアウト</button>
+      </div>
+
+      {toast && <div style={{ position:'fixed', bottom:90, left:'50%', transform:'translateX(-50%)', background:C.ink, color:'white', padding:'12px 20px', borderRadius:12, fontSize:13, fontWeight:500, zIndex:300, whiteSpace:'nowrap' }}>{toast}</div>}
+    </div>
+  );
+}
+
+// ── メインアプリ ──
+function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [contacts, setContacts] = useState([]);
+  const [settings, setSettings] = useState(null);
+  const [page, setPage] = useState('home');
+  const [showForm, setShowForm] = useState(false);
+  const [editContact, setEditContact] = useState(null);
+  const [detailContact, setDetailContact] = useState(null);
+  const [showDetail, setShowDetail] = useState(false);
+
+  useEffect(() => {
+    sb.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user || null);
+      setLoading(false);
+    });
+    const { data: { subscription } } = sb.auth.onAuthStateChange((_, session) => {
+      setUser(session?.user || null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const importExcel = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      const wb = XLSX.read(ev.target.result, { type:'array', cellDates:true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+
+      // ヘッダー行を自動検出
+      let dataStart = 0, nameCol = 0, bdCol = 1;
+      for (let i = 0; i < Math.min(rows.length, 5); i++) {
+        const r = rows[i].map(c => String(c));
+        const ni = r.findIndex(c => c.includes('名前')||c.includes('氏名')||c.toLowerCase().includes('name'));
+        const bi = r.findIndex(c => c.includes('誕生')||c.includes('生年')||c.toLowerCase().includes('birth'));
+        if (ni >= 0 || bi >= 0) {
+          dataStart = i + 1;
+          if (ni >= 0) nameCol = ni;
+          if (bi >= 0) bdCol = bi;
+          break;
+        }
+      }
+
+      // ヘッダーが見つからない場合、A列が月/日形式なら「誕生日リスト形式」と判断して列を反転
+      if (dataStart === 0 && rows.length > 0) {
+        const firstVal = String(rows[0][0]||'').trim();
+        if (/^\d{1,2}\/\d{1,2}$/.test(firstVal) || /^\d{1,2}月\d{1,2}日?$/.test(firstVal)) {
+          nameCol = 1;
+          bdCol = 0;
+        }
+      }
+
+      const newContacts = [];
+      for (let i = dataStart; i < rows.length; i++) {
+        const row = rows[i];
+        const rawName = String(row[nameCol]||'').replace('\u3000', ' ').replace(/様\s*$/, '').trim();
+        if (!rawName) continue;
+        let bd = '';
+        const raw = row[bdCol];
+        if (raw instanceof Date) {
+          bd = `${raw.getFullYear()}-${String(raw.getMonth()+1).padStart(2,'0')}-${String(raw.getDate()).padStart(2,'0')}`;
+        } else if (raw) {
+          const s = String(raw).trim();
+          // 年月日形式（例: 1975/4/15）
+          const full = s.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+          if (full) {
+            bd = `${full[1]}-${full[2].padStart(2,'0')}-${full[3].padStart(2,'0')}`;
+          } else {
+            // 月/日形式（例: 4/15 または 4月15日）→ 年なしで保存
+            const md = s.match(/^(\d{1,2})[\/月](\d{1,2})日?$/);
+            if (md) bd = `1900-${md[1].padStart(2,'0')}-${md[2].padStart(2,'0')}`;
+          }
+        }
+        newContacts.push({ name: rawName, birthday: bd||null });
+      }
+
+      if (!newContacts.length) { alert('取り込めるデータが見つかりませんでした'); return; }
+
+      // 既存の名前と重複チェック
+      const { data: existing } = await sb.from('bd_contacts').select('name').eq('user_id', user.id);
+      const existingNames = new Set((existing||[]).map(c => c.name));
+      const toAdd = newContacts.filter(c => !existingNames.has(c.name));
+      const skipped = newContacts.length - toAdd.length;
+
+      if (!toAdd.length) { alert('全て重複のためスキップしました'); return; }
+
+      await sb.from('bd_contacts').insert(toAdd.map(c => ({ user_id:user.id, name:c.name, birthday:c.birthday })));
+      await load();
+      alert(`✅ ${toAdd.length}件取り込みました${skipped ? `（重複${skipped}件スキップ）` : ''}`);
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const load = useCallback(async () => {
+    if (!user) return;
+    const { contacts, settings } = await loadAll(user.id);
+    setContacts(contacts);
+    setSettings(settings);
+  }, [user]);
+
+  useEffect(() => { if (user) load(); }, [user, load]);
+
+  const logout = async () => { await sb.auth.signOut(); setUser(null); setContacts([]); setSettings(null); };
+
+  const openEdit = c => { setEditContact(c); setShowForm(true); };
+  const openDetail = c => { setDetailContact(c); setShowDetail(true); };
+
+  if (loading) return <div style={{ ...S.app, display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh' }}><div style={{ fontSize:13, color:C.muted }}>読み込み中...</div></div>;
+  if (!user) return <LoginScreen onLogin={u => setUser(u)} />;
+
+  const upcomingCount = contacts.reduce((n, c) => {
+    const bd = daysUntilBD(c.birthday);
+    if (bd !== null && bd <= 30) n++;
+    (c.family||[]).forEach(f => { const fbd = daysUntilBD(f.birthday); if (fbd !== null && fbd <= 30) n++; });
+    return n;
+  }, 0);
+
+  return (
+    <div style={S.app}>
+      <div style={S.header}>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700 }}>🎂 誕生日<span style={{ color:C.gold }}>ノート</span></div>
+          <div style={{ fontSize:10, color:'rgba(255,255,255,0.4)', letterSpacing:1 }}>BIRTHDAY MANAGER</div>
+        </div>
+        <label style={{ ...S.fab, background:C.sage, cursor:'pointer', fontSize:18 }} title="Excelから取り込む">
+          📊<input type="file" accept=".xlsx,.xls,.csv" style={{ display:'none' }} onChange={importExcel} />
+        </label>
+        <button style={S.fab} onClick={() => { setEditContact(null); setShowForm(true); }}>＋</button>
+      </div>
+
+      {page==='home' && <HomeTab contacts={contacts} onSelect={openDetail} />}
+      {page==='list' && <ListTab contacts={contacts} onSelect={openDetail} />}
+      {page==='settings' && <SettingsTab user={user} settings={settings} onSettingsChanged={load} onLogout={logout} />}
+
+      <div style={S.bottomNav}>
+        {[
+          ['home', '🏠', `ホーム${upcomingCount?` (${upcomingCount})`:''}` ],
+          ['list', '👥', `一覧 (${contacts.length})`],
+          ['settings', '⚙️', '設定'],
+        ].map(([p, icon, label]) => (
+          <button key={p} style={S.navBtn(page===p)} onClick={()=>setPage(p)}>
+            <span style={{ fontSize:20 }}>{icon}</span>{label}
+          </button>
+        ))}
+      </div>
+
+      <ContactForm open={showForm} onClose={()=>{setShowForm(false);setEditContact(null);}} editContact={editContact} onSaved={load} userId={user.id} />
+      <ContactDetail open={showDetail} onClose={()=>setShowDetail(false)} contact={detailContact} onEdit={c=>{setShowDetail(false);setTimeout(()=>openEdit(c),200);}} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
