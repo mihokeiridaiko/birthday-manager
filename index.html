@@ -6,12 +6,24 @@
   <title>誕生日ノート</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎂</text></svg>" />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <!-- CDNはバージョン固定（無指定だと自動で最新版になり、破壊的変更で突然動かなくなるため） -->
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.2/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <style>* { box-sizing: border-box; margin: 0; padding: 0; }</style>
+  <script>
+    // 真っ白対策：読み込みやスクリプトのエラーを画面に表示する
+    window.addEventListener('error', function (e) {
+      var root = document.getElementById('root');
+      if (root && !root.hasChildNodes()) {
+        root.innerHTML = '<div style="font-family:sans-serif;padding:24px;color:#c03030;font-size:14px;line-height:1.7">'
+          + '<b>読み込みエラーが発生しました</b><br>ページを再読み込みしてください。<br><br>'
+          + '<span style="color:#888;font-size:12px">' + (e.message || e.type || '') + '</span></div>';
+      }
+    });
+  </script>
 </head>
 <body>
 <div id="root"></div>
@@ -616,7 +628,7 @@ function App() {
     sb.auth.getSession().then(({ data }) => {
       setUser(data.session?.user || null);
       setLoading(false);
-    });
+    }).catch(() => setLoading(false));
     const { data: { subscription } } = sb.auth.onAuthStateChange((_, session) => {
       setUser(session?.user || null);
     });
